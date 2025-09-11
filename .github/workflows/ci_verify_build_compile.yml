@@ -1,18 +1,142 @@
-name: CI - Optimized Build
+name: CI - Smart Build & Test
 
 on:
   pull_request:
     branches: [main, development]
   workflow_dispatch:
 
+env:
+  GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2 -Dorg.gradle.parallel=true
+  JAVA_TOOL_OPTIONS: -Xmx4g -XX:+UseG1GC
+
 jobs:
-  build:
+  detect-changes:
+    name: 🔍 Detect Changes
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      build-all: ${{ steps.detect.outputs.build-all }}
+      test-modules: ${{ steps.detect.outputs.test-modules }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch full history for proper diff
+          fetch-depth: 0
+
+      - name: 🔍 Detect changed modules and dependencies
+        id: detect
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          
+          echo "Comparing: $BASE_SHA...$HEAD_SHA"
+          
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only $BASE_SHA $HEAD_SHA || echo "")
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "build-all=false" >> $GITHUB_OUTPUT
+            echo "test-modules=[]" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Check for root-level changes
+          if echo "$CHANGED_FILES" | grep -qE '^(build\.gradle|settings\.gradle|gradle\.properties|build-logic/)'; then
+            echo "🔄 Root build files changed"
+            echo "build-all=true" >> $GITHUB_OUTPUT
+            echo "test-modules=[\"all\"]" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Define module mappings
+          declare -A modules
+          modules["app/"]=":app"
+          modules["tvapp/"]=":tvapp"
+          modules["data/repositories/vod/"]=":data:repositories:vod"
+          modules["data/remote_data_source/vod/"]=":data:remote_data_source:vod"
+          modules["data/local_data_source/vod/"]=":data:local_data_source:vod"
+          modules["data/repositories/identity/"]=":data:repositories:identity"
+          modules["data/remote_data_source/identity/"]=":data:remote_data_source:identity"
+          modules["data/local_data_source/identity/"]=":data:local_data_source:identity"
+          modules["domain/vod/"]=":domain:vod"
+          modules["domain/identity/"]=":domain:identity"
+          modules["design_system/"]=":design_system"
+          modules["image_viewer/"]=":image_viewer"
+          modules["feature/authentication/api/"]=":feature:authentication:api"
+          modules["feature/authentication/presentation/"]=":feature:authentication:presentation"
+          modules["feature/home/api/"]=":feature:home:api"
+          modules["feature/home/presentation/"]=":feature:home:presentation"
+          modules["feature/user_profile/api/"]=":feature:user_profile:api"
+          modules["feature/user_profile/presentation/"]=":feature:user_profile:presentation"
+          modules["feature/playlists/api/"]=":feature:playlists:api"
+          modules["feature/playlists/presentation/"]=":feature:playlists:presentation"
+          modules["feature/search/api/"]=":feature:search:api"
+          modules["feature/search/presentation/"]=":feature:search:presentation"
+          modules["feature/media_details/api/"]=":feature:media_details:api"
+          modules["feature/media_details/presentation/"]=":feature:media_details:presentation"
+          modules["feature/onboarding/api/"]=":feature:onboarding:api"
+          modules["feature/onboarding/presentation/"]=":feature:onboarding:presentation"
+          modules["feature/category/api/"]=":feature:category:api"
+          modules["feature/category/presentation/"]=":feature:category:presentation"
+          
+          # Find changed modules
+          changed_modules=()
+          while IFS= read -r file; do
+            for path in "${!modules[@]}"; do
+              if [[ "$file" =~ ^"$path" ]]; then
+                module="${modules[$path]}"
+                if [[ ! " ${changed_modules[*]} " =~ " ${module} " ]]; then
+                  changed_modules+=("$module")
+                fi
+                break
+              fi
+            done
+          done <<< "$CHANGED_FILES"
+          
+          # Output changed modules for testing
+          test_modules_json="["
+          for module in "${changed_modules[@]}"; do
+            if [ ${#test_modules_json} -gt 1 ]; then
+              test_modules_json+=","
+            fi
+            test_modules_json+="\"$module\""
+          done
+          test_modules_json+="]"
+          
+          echo "build-all=false" >> $GITHUB_OUTPUT
+          echo "test-modules=$test_modules_json" >> $GITHUB_OUTPUT
+          
+          echo "Changed modules: ${changed_modules[*]}"
+
+      - name: 📋 Set matrix for parallel jobs
+        id: set-matrix
+        run: |
+          if [ "${{ steps.detect.outputs.build-all }}" = "true" ]; then
+            matrix='{"include":[{"name":"all","modules":"all"}]}'
+          else
+            # Create matrix based on changed modules
+            modules='${{ steps.detect.outputs.test-modules }}'
+            if [ "$modules" = "[]" ]; then
+              matrix='{"include":[]}'
+            else
+              matrix='{"include":[{"name":"changed","modules":"'"$modules"'"}]}'
+            fi
+          fi
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+
+  build:
+    name: 🏗️ Build
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.build-all == 'true' || needs.detect-changes.outputs.test-modules != '[]'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -20,6 +144,17 @@ jobs:
           java-version: 17
           distribution: temurin
           cache: gradle
+
+      - name: 📁 Setup build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle/
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Prepare google-services.json
         shell: bash
@@ -47,236 +182,178 @@ jobs:
           echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" > keys.properties
           cp keys.properties ./data/remote_data_source/vod/keys.properties
 
-      - name: 🔍 Detect changed modules
-        id: changes
+      - name: 🔧 Validate Gradle configuration
+        run: ./gradlew help --no-daemon
+
+      - name: 🏗️ Smart build
         run: |
-          # Get the base branch for comparison
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          if [ "${{ needs.detect-changes.outputs.build-all }}" = "true" ]; then
+            echo "🔄 Building all modules"
+            ./gradlew assemble -x lintVitalRelease -x lint --parallel --build-cache --no-daemon
           else
-            BASE_SHA="${{ github.event.before }}"
-          fi
+            echo "🎯 Building specific modules: ${{ needs.detect-changes.outputs.test-modules }}"
           
-          echo "Comparing against: $BASE_SHA"
+            # Parse JSON array and build specific modules
+            modules='${{ needs.detect-changes.outputs.test-modules }}'
           
-          # Get changed files
-          CHANGED_FILES=$(git diff --name-only $BASE_SHA HEAD || echo "")
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
+            # Remove brackets and quotes, split by comma
+            clean_modules=$(echo "$modules" | tr -d '[]"' | tr ',' ' ')
           
-          # Function to check if module changed
-          check_module_changed() {
-            local module_path="$1"
-            local output_var="$2"
-            if echo "$CHANGED_FILES" | grep -q "^${module_path}/"; then
-              echo "${output_var}=true" >> $GITHUB_OUTPUT
-              echo "✅ Module $module_path changed"
+            if [ -n "$clean_modules" ]; then
+              build_tasks=""
+              for module in $clean_modules; do
+                build_tasks="$build_tasks ${module}:assemble"
+          
+                # Build dependencies too
+                case "$module" in
+                  ":app")
+                    build_tasks="$build_tasks :design_system:assemble :image_viewer:assemble"
+                    ;;
+                  ":feature:"*":presentation")
+                    build_tasks="$build_tasks :design_system:assemble"
+                    ;;
+                  ":data:repositories:"*)
+                    # Build related domain and data source modules
+                    if [[ "$module" == *":vod" ]]; then
+                      build_tasks="$build_tasks :domain:vod:assemble :data:remote_data_source:vod:assemble :data:local_data_source:vod:assemble"
+                    elif [[ "$module" == *":identity" ]]; then
+                      build_tasks="$build_tasks :domain:identity:assemble :data:remote_data_source:identity:assemble :data:local_data_source:identity:assemble"
+                    fi
+                    ;;
+                esac
+              done
+          
+              echo "🚀 Executing: ./gradlew $build_tasks"
+              ./gradlew $build_tasks -x lintVitalRelease -x lint --parallel --build-cache --no-daemon
             else
-              echo "${output_var}=false" >> $GITHUB_OUTPUT
+              echo "ℹ️ No modules to build"
             fi
-          }
-          
-          # Check each module
-          check_module_changed "app" "app_changed"
-          check_module_changed "data/repositories/vod" "data_repositories_vod_changed"
-          check_module_changed "data/remote_data_source/vod" "data_remote_vod_changed"
-          check_module_changed "data/local_data_source/vod" "data_local_vod_changed"
-          check_module_changed "data/repositories/identity" "data_repositories_identity_changed"
-          check_module_changed "data/remote_data_source/identity" "data_remote_identity_changed"
-          check_module_changed "data/local_data_source/identity" "data_local_identity_changed"
-          check_module_changed "domain/vod" "domain_vod_changed"
-          check_module_changed "domain/identity" "domain_identity_changed"
-          check_module_changed "design_system" "design_system_changed"
-          check_module_changed "image_viewer" "image_viewer_changed"
-          check_module_changed "tvapp" "tvapp_changed"
-          
-          # Feature modules
-          check_module_changed "feature/authentication/api" "feature_auth_api_changed"
-          check_module_changed "feature/authentication/presentation" "feature_auth_presentation_changed"
-          check_module_changed "feature/home/api" "feature_home_api_changed"
-          check_module_changed "feature/home/presentation" "feature_home_presentation_changed"
-          check_module_changed "feature/user_profile/api" "feature_profile_api_changed"
-          check_module_changed "feature/user_profile/presentation" "feature_profile_presentation_changed"
-          check_module_changed "feature/playlists/api" "feature_playlists_api_changed"
-          check_module_changed "feature/playlists/presentation" "feature_playlists_presentation_changed"
-          check_module_changed "feature/search/api" "feature_search_api_changed"
-          check_module_changed "feature/search/presentation" "feature_search_presentation_changed"
-          check_module_changed "feature/media_details/api" "feature_media_details_api_changed"
-          check_module_changed "feature/media_details/presentation" "feature_media_details_presentation_changed"
-          check_module_changed "feature/onboarding/api" "feature_onboarding_api_changed"
-          check_module_changed "feature/onboarding/presentation" "feature_onboarding_presentation_changed"
-          check_module_changed "feature/category/api" "feature_category_api_changed"
-          check_module_changed "feature/category/presentation" "feature_category_presentation_changed"
-          
-          # Check for root-level changes (build scripts, etc.)
-          if echo "$CHANGED_FILES" | grep -qE '^(build\.gradle|settings\.gradle|gradle\.properties|build-logic/)'; then
-            echo "root_changed=true" >> $GITHUB_OUTPUT
-            echo "✅ Root build files changed - will build all modules"
-          else
-            echo "root_changed=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 🏗️ Build changed modules and dependents
+  test:
+    name: 🧪 Test & Coverage
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build]
+    if: needs.detect-changes.outputs.test-modules != '[]'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+          cache: gradle
+
+      - name: 📁 Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle/
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Prepare google-services.json
+        shell: bash
         run: |
-          BUILD_TASKS=""
-          
-          # If root files changed, build everything
-          if [ "${{ steps.changes.outputs.root_changed }}" = "true" ]; then
-            echo "🔄 Root files changed - building all modules"
-            ./gradlew assemble -x lintVitalRelease -x lint --parallel --build-cache
-            exit 0
-          fi
-          
-          # Core/foundational modules (these affect many others)
-          if [ "${{ steps.changes.outputs.design_system_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :design_system:assemble"
-            echo "📱 Building design_system"
-          fi
-          
-          if [ "${{ steps.changes.outputs.image_viewer_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :image_viewer:assemble"
-            echo "🖼️ Building image_viewer"
-          fi
-          
-          # Domain modules
-          if [ "${{ steps.changes.outputs.domain_vod_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :domain:vod:assemble"
-            echo "🎬 Building domain:vod"
-          fi
-          
-          if [ "${{ steps.changes.outputs.domain_identity_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :domain:identity:assemble"
-            echo "👤 Building domain:identity"
-          fi
-          
-          # Data layer modules
-          if [ "${{ steps.changes.outputs.data_local_vod_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :data:local_data_source:vod:assemble"
-            echo "💾 Building data:local_data_source:vod"
-          fi
-          
-          if [ "${{ steps.changes.outputs.data_remote_vod_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :data:remote_data_source:vod:assemble"
-            echo "🌐 Building data:remote_data_source:vod"
-          fi
-          
-          if [ "${{ steps.changes.outputs.data_repositories_vod_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :data:repositories:vod:assemble"
-            echo "📚 Building data:repositories:vod"
-          fi
-          
-          if [ "${{ steps.changes.outputs.data_local_identity_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :data:local_data_source:identity:assemble"
-            echo "💾 Building data:local_data_source:identity"
-          fi
-          
-          if [ "${{ steps.changes.outputs.data_remote_identity_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :data:remote_data_source:identity:assemble"
-            echo "🌐 Building data:remote_data_source:identity"
-          fi
-          
-          if [ "${{ steps.changes.outputs.data_repositories_identity_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :data:repositories:identity:assemble"
-            echo "📚 Building data:repositories:identity"
-          fi
-          
-          # Feature API modules
-          if [ "${{ steps.changes.outputs.feature_auth_api_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:authentication:api:assemble"
-            echo "🔑 Building feature:authentication:api"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_home_api_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:home:api:assemble"
-            echo "🏠 Building feature:home:api"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_profile_api_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:user_profile:api:assemble"
-            echo "👤 Building feature:user_profile:api"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_playlists_api_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:playlists:api:assemble"
-            echo "📝 Building feature:playlists:api"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_search_api_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:search:api:assemble"
-            echo "🔍 Building feature:search:api"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_media_details_api_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:media_details:api:assemble"
-            echo "📺 Building feature:media_details:api"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_onboarding_api_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:onboarding:api:assemble"
-            echo "🚀 Building feature:onboarding:api"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_category_api_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:category:api:assemble"
-            echo "📂 Building feature:category:api"
-          fi
-          
-          # Feature presentation modules
-          if [ "${{ steps.changes.outputs.feature_auth_presentation_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:authentication:presentation:assemble"
-            echo "🔑 Building feature:authentication:presentation"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_home_presentation_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:home:presentation:assemble"
-            echo "🏠 Building feature:home:presentation"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_profile_presentation_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:user_profile:presentation:assemble"
-            echo "👤 Building feature:user_profile:presentation"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_playlists_presentation_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:playlists:presentation:assemble"
-            echo "📝 Building feature:playlists:presentation"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_search_presentation_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:search:presentation:assemble"
-            echo "🔍 Building feature:search:presentation"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_media_details_presentation_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:media_details:presentation:assemble"
-            echo "📺 Building feature:media_details:presentation"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_onboarding_presentation_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:onboarding:presentation:assemble"
-            echo "🚀 Building feature:onboarding:presentation"
-          fi
-          
-          if [ "${{ steps.changes.outputs.feature_category_presentation_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :feature:category:presentation:assemble"
-            echo "📂 Building feature:category:presentation"
-          fi
-          
-          # Main app modules
-          if [ "${{ steps.changes.outputs.app_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :app:assemble"
-            echo "📱 Building app"
-          fi
-          
-          if [ "${{ steps.changes.outputs.tvapp_changed }}" = "true" ]; then
-            BUILD_TASKS="$BUILD_TASKS :tvapp:assemble"
-            echo "📺 Building tvapp"
-          fi
-          
-          # Execute build tasks
-          if [ -n "$BUILD_TASKS" ]; then
-            echo "🚀 Executing build tasks: $BUILD_TASKS"
-            ./gradlew $BUILD_TASKS -x lintVitalRelease -x lint --parallel --build-cache
+          if [ -n "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" ]; then
+            echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > app/google-services.json
           else
-            echo "ℹ️ No modules changed - skipping build"
+            printf '{"project_info":{"project_number":"000000000000","project_id":"stub-project"}}' > app/google-services.json
           fi
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Generate keys.properties
+        run: |
+          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" > keys.properties
+          cp keys.properties ./data/remote_data_source/vod/keys.properties
+
+      - name: 🧪 Run tests
+        run: |
+          if [ "${{ needs.detect-changes.outputs.build-all }}" = "true" ]; then
+            echo "🔄 Running all tests"
+            ./gradlew test koverXmlReport koverHtmlReport --parallel --build-cache --no-daemon
+          else
+            echo "🎯 Running tests for specific modules"
+            modules='${{ needs.detect-changes.outputs.test-modules }}'
+            clean_modules=$(echo "$modules" | tr -d '[]"' | tr ',' ' ')
+          
+            if [ -n "$clean_modules" ]; then
+              test_tasks=""
+              kover_tasks=""
+          
+              for module in $clean_modules; do
+                # Only run tests for modules that typically have tests
+                case "$module" in
+                  ":domain:"*|":data:repositories:"*|":data:remote_data_source:"*|":data:local_data_source:"*)
+                    test_tasks="$test_tasks ${module}:test"
+                    kover_tasks="$kover_tasks ${module}:koverXmlReport ${module}:koverHtmlReport"
+                    ;;
+                esac
+              done
+          
+              if [ -n "$test_tasks" ]; then
+                echo "🚀 Executing tests: $test_tasks"
+                ./gradlew $test_tasks --parallel --build-cache --no-daemon --continue
+          
+                if [ -n "$kover_tasks" ]; then
+                  echo "📊 Generating coverage: $kover_tasks"
+                  ./gradlew $kover_tasks --parallel --build-cache --no-daemon --continue
+                fi
+              else
+                echo "ℹ️ No testable modules found"
+              fi
+            fi
+          fi
+
+      - name: 📊 Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: "**/build/reports/kover/report.xml"
+          flags: unittests
+          name: novix-coverage-report
+          fail_ci_if_error: false
+
+      - name: 📋 Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            **/build/test-results/test/TEST-*.xml
+            **/build/reports/kover/
+          retention-days: 5
+
+  summary:
+    name: 📝 Build Summary
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build, test]
+    if: always()
+
+    steps:
+      - name: 📝 Summary
+        run: |
+          echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.detect-changes.outputs.build-all }}" = "true" ]; then
+            echo "- **Build Type**: Full build (root files changed)" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.detect-changes.outputs.test-modules }}" = "[]" ]; then
+            echo "- **Build Type**: No build needed (no modules changed)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Build Type**: Incremental build" >> $GITHUB_STEP_SUMMARY
+            echo "- **Changed Modules**: ${{ needs.detect-changes.outputs.test-modules }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "- **Build Status**: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Test Status**: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
