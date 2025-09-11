@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -272,6 +273,8 @@ private fun HomeScreenContent(
         onDismiss = interactionListener::onDismissLoginBottomSheet,
         onLoginButtonClick = interactionListener::onLoginButtonClick
     )
+
+    Text("hello world haha")
 }
 
 @Composable

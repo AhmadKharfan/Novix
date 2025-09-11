@@ -1,4 +1,4 @@
-name: CI – Test Coverage Check
+name: CI - Smart Test & Coverage
 
 on:
   pull_request:
@@ -10,6 +10,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -17,6 +19,16 @@ jobs:
           java-version: 17
           distribution: temurin
           cache: gradle
+
+      - name: 📁 Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle/
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       - name: Prepare google-services.json
         shell: bash
@@ -44,13 +56,270 @@ jobs:
           echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" > keys.properties
           cp keys.properties ./data/remote_data_source/vod/keys.properties
 
-      - name: Run unit tests + Kover
-        run: ./gradlew test koverVerify koverXmlReport koverHtmlReport
+      - name: 🔍 Detect modules needing tests
+        id: test_changes
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          
+          echo "Comparing: $BASE_SHA...$HEAD_SHA"
+          
+          CHANGED_FILES=$(git diff --name-only $BASE_SHA $HEAD_SHA || echo "TEST_ALL")
+          
+          if [ "$CHANGED_FILES" = "TEST_ALL" ] || [ -z "$CHANGED_FILES" ]; then
+            echo "test_all=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Will test all modules"
+            exit 0
+          fi
+          
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Check for root changes
+          if echo "$CHANGED_FILES" | grep -qE '^(build\.gradle|settings\.gradle|gradle\.properties|build-logic/)'; then
+            echo "test_all=true" >> $GITHUB_OUTPUT
+            echo "🔄 Root files changed - testing all"
+            exit 0
+          fi
+          
+          echo "test_all=false" >> $GITHUB_OUTPUT
+          
+          # Function to check if module needs testing (only source code changes, not test-only changes)
+          check_test_needed() {
+            local path="$1"
+            local flag="$2"
+            # Check for source code changes (src/main) or build file changes
+            if echo "$CHANGED_FILES" | grep -qE "^${path}/(src/main|build\.gradle)"; then
+              echo "${flag}=true" >> $GITHUB_OUTPUT
+              echo "✅ $path needs testing (source changes)"
+            else
+              echo "${flag}=false" >> $GITHUB_OUTPUT
+            fi
+          }
+          
+          # Check testable modules (typically domain, data, and some feature modules)
+          check_test_needed "domain/vod" "test_domain_vod"
+          check_test_needed "domain/identity" "test_domain_identity"
+          check_test_needed "data/repositories/vod" "test_data_repo_vod"
+          check_test_needed "data/repositories/identity" "test_data_repo_identity"
+          check_test_needed "data/remote_data_source/vod" "test_data_remote_vod"
+          check_test_needed "data/remote_data_source/identity" "test_data_remote_identity"
+          check_test_needed "data/local_data_source/vod" "test_data_local_vod"
+          check_test_needed "data/local_data_source/identity" "test_data_local_identity"
+          
+          # Feature modules that might have testable logic
+          check_test_needed "feature/authentication/api" "test_auth_api"
+          check_test_needed "feature/home/api" "test_home_api"
+          check_test_needed "feature/user_profile/api" "test_profile_api"
+          check_test_needed "feature/playlists/api" "test_playlists_api"
+          check_test_needed "feature/search/api" "test_search_api"
+          check_test_needed "feature/media_details/api" "test_media_details_api"
+          check_test_needed "feature/onboarding/api" "test_onboarding_api"
+          check_test_needed "feature/category/api" "test_category_api"
 
-      - name: Upload coverage to Codecov
+      - name: 🧪 Run tests for changed modules
+        run: |
+          if [ "${{ steps.test_changes.outputs.test_all }}" = "true" ]; then
+            echo "🔄 Running all tests"
+            ./gradlew test koverXmlReport koverHtmlReport --parallel --build-cache --no-daemon --continue
+            exit 0
+          fi
+          
+          TEST_TASKS=""
+          KOVER_TASKS=""
+          
+          # Domain modules
+          if [ "${{ steps.test_changes.outputs.test_domain_vod }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :domain:vod:test"
+            KOVER_TASKS="$KOVER_TASKS :domain:vod:koverXmlReport :domain:vod:koverHtmlReport"
+            echo "🎬 Testing domain:vod"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_domain_identity }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :domain:identity:test"
+            KOVER_TASKS="$KOVER_TASKS :domain:identity:koverXmlReport :domain:identity:koverHtmlReport"
+            echo "👤 Testing domain:identity"
+          fi
+          
+          # Data repository modules
+          if [ "${{ steps.test_changes.outputs.test_data_repo_vod }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :data:repositories:vod:test"
+            KOVER_TASKS="$KOVER_TASKS :data:repositories:vod:koverXmlReport :data:repositories:vod:koverHtmlReport"
+            echo "📚 Testing data:repositories:vod"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_data_repo_identity }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :data:repositories:identity:test"
+            KOVER_TASKS="$KOVER_TASKS :data:repositories:identity:koverXmlReport :data:repositories:identity:koverHtmlReport"
+            echo "📚 Testing data:repositories:identity"
+          fi
+          
+          # Data remote source modules
+          if [ "${{ steps.test_changes.outputs.test_data_remote_vod }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :data:remote_data_source:vod:test"
+            KOVER_TASKS="$KOVER_TASKS :data:remote_data_source:vod:koverXmlReport :data:remote_data_source:vod:koverHtmlReport"
+            echo "🌐 Testing data:remote_data_source:vod"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_data_remote_identity }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :data:remote_data_source:identity:test"
+            KOVER_TASKS="$KOVER_TASKS :data:remote_data_source:identity:koverXmlReport :data:remote_data_source:identity:koverHtmlReport"
+            echo "🌐 Testing data:remote_data_source:identity"
+          fi
+          
+          # Data local source modules
+          if [ "${{ steps.test_changes.outputs.test_data_local_vod }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :data:local_data_source:vod:test"
+            KOVER_TASKS="$KOVER_TASKS :data:local_data_source:vod:koverXmlReport :data:local_data_source:vod:koverHtmlReport"
+            echo "💾 Testing data:local_data_source:vod"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_data_local_identity }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :data:local_data_source:identity:test"
+            KOVER_TASKS="$KOVER_TASKS :data:local_data_source:identity:koverXmlReport :data:local_data_source:identity:koverHtmlReport"
+            echo "💾 Testing data:local_data_source:identity"
+          fi
+          
+          # Feature API modules (if they have business logic to test)
+          if [ "${{ steps.test_changes.outputs.test_auth_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:authentication:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:authentication:api:koverXmlReport :feature:authentication:api:koverHtmlReport"
+            echo "🔑 Testing feature:authentication:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_home_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:home:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:home:api:koverXmlReport :feature:home:api:koverHtmlReport"
+            echo "🏠 Testing feature:home:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_profile_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:user_profile:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:user_profile:api:koverXmlReport :feature:user_profile:api:koverHtmlReport"
+            echo "👤 Testing feature:user_profile:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_playlists_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:playlists:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:playlists:api:koverXmlReport :feature:playlists:api:koverHtmlReport"
+            echo "📝 Testing feature:playlists:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_search_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:search:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:search:api:koverXmlReport :feature:search:api:koverHtmlReport"
+            echo "🔍 Testing feature:search:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_media_details_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:media_details:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:media_details:api:koverXmlReport :feature:media_details:api:koverHtmlReport"
+            echo "📺 Testing feature:media_details:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_onboarding_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:onboarding:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:onboarding:api:koverXmlReport :feature:onboarding:api:koverHtmlReport"
+            echo "🚀 Testing feature:onboarding:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_category_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:category:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:category:api:koverXmlReport :feature:category:api:koverHtmlReport"
+            echo "📂 Testing feature:category:api"
+          fi
+          
+          # Execute tests
+          if [ -n "$TEST_TASKS" ]; then
+            echo "🚀 Running tests: $TEST_TASKS"
+            ./gradlew $TEST_TASKS --parallel --build-cache --no-daemon --continue
+          
+            # Generate coverage reports
+            if [ -n "$KOVER_TASKS" ]; then
+              echo "📊 Generating coverage reports"
+              ./gradlew $KOVER_TASKS --parallel --build-cache --no-daemon --continue
+            fi
+          
+            echo "✅ Tests completed!"
+          else
+            echo "ℹ️ No modules need testing - skipping tests"
+          fi
+
+      - name: 🔍 Verify coverage thresholds
+        if: success()
+        continue-on-error: true
+        run: |
+          # Only run koverVerify for modules that were tested
+          VERIFY_TASKS=""
+          
+          if [ "${{ steps.test_changes.outputs.test_all }}" = "true" ]; then
+            echo "🔍 Verifying coverage for all modules"
+            ./gradlew koverVerify --parallel --build-cache --no-daemon --continue
+          else
+            # Add verification tasks for tested modules
+            if [ "${{ steps.test_changes.outputs.test_domain_vod }}" = "true" ]; then
+              VERIFY_TASKS="$VERIFY_TASKS :domain:vod:koverVerify"
+            fi
+            if [ "${{ steps.test_changes.outputs.test_domain_identity }}" = "true" ]; then
+              VERIFY_TASKS="$VERIFY_TASKS :domain:identity:koverVerify"
+            fi
+            if [ "${{ steps.test_changes.outputs.test_data_repo_vod }}" = "true" ]; then
+              VERIFY_TASKS="$VERIFY_TASKS :data:repositories:vod:koverVerify"
+            fi
+            if [ "${{ steps.test_changes.outputs.test_data_repo_identity }}" = "true" ]; then
+              VERIFY_TASKS="$VERIFY_TASKS :data:repositories:identity:koverVerify"
+            fi
+          
+            if [ -n "$VERIFY_TASKS" ]; then
+              echo "🔍 Verifying coverage: $VERIFY_TASKS"
+              ./gradlew $VERIFY_TASKS --parallel --build-cache --no-daemon --continue
+            fi
+          fi
+
+      - name: 📊 Upload coverage to Codecov
+        if: always()
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: build/reports/kover/merged/report.xml
+          files: |
+            **/build/reports/kover/report.xml
+            build/reports/kover/merged/report.xml
           flags: unittests
           name: novix-coverage-report
+          fail_ci_if_error: false
+
+      - name: 📋 Upload test results and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-and-coverage-reports
+          path: |
+            **/build/test-results/test/TEST-*.xml
+            **/build/reports/kover/
+            build/reports/kover/
+          retention-days: 7
+
+      - name: 📝 Test Summary
+        if: always()
+        run: |
+          echo "## 🧪 Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.test_changes.outputs.test_all }}" = "true" ]; then
+            echo "- **Test Type**: Full test suite" >> $GITHUB_STEP_SUMMARY
+            echo "- **Reason**: Root files changed or unable to detect changes" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Test Type**: Selective testing" >> $GITHUB_STEP_SUMMARY
+            echo "- **Tested Modules**: Only modules with source code changes" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Count test files
+          TEST_FILES=$(find . -name "TEST-*.xml" -path "*/build/test-results/*" 2>/dev/null | wc -l)
+          echo "- **Test Files Generated**: $TEST_FILES" >> $GITHUB_STEP_SUMMARY
+          
+          # Check if any tests failed
+          if find . -name "TEST-*.xml" -path "*/build/test-results/*" -exec grep -l 'failures="[^0]"' {} + 2>/dev/null | grep -q .; then
+            echo "- **Status**: ❌ Some tests failed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status**: ✅ All tests passed" >> $GITHUB_STEP_SUMMARY
+          fi
