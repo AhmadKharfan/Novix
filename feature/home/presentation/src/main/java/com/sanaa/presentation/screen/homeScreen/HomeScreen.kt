@@ -275,6 +275,7 @@ private fun HomeScreenContent(
     )
 
     Text("add new test")
+    Text("add another text")
 }
 
 @Composable

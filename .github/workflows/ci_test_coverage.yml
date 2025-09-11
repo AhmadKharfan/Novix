@@ -181,13 +181,95 @@ jobs:
             echo "🔑 Testing feature:authentication:api"
           fi
           
+          if [ "${{ steps.test_changes.outputs.test_feature_auth_presentation }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:authentication:presentation:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:authentication:presentation:koverXmlReport :feature:authentication:presentation:koverHtmlReport"
+            echo "🔑 Testing feature:authentication:presentation"
+          fi
+          
           if [ "${{ steps.test_changes.outputs.test_feature_home_api }}" = "true" ]; then
             TEST_TASKS="$TEST_TASKS :feature:home:api:test"
             KOVER_TASKS="$KOVER_TASKS :feature:home:api:koverXmlReport :feature:home:api:koverHtmlReport"
             echo "🏠 Testing feature:home:api"
           fi
           
-          # Add more feature modules as needed...
+          if [ "${{ steps.test_changes.outputs.test_feature_home_presentation }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:home:presentation:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:home:presentation:koverXmlReport :feature:home:presentation:koverHtmlReport"
+            echo "🏠 Testing feature:home:presentation"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_profile_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:user_profile:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:user_profile:api:koverXmlReport :feature:user_profile:api:koverHtmlReport"
+            echo "👤 Testing feature:user_profile:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_profile_presentation }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:user_profile:presentation:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:user_profile:presentation:koverXmlReport :feature:user_profile:presentation:koverHtmlReport"
+            echo "👤 Testing feature:user_profile:presentation"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_playlists_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:playlists:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:playlists:api:koverXmlReport :feature:playlists:api:koverHtmlReport"
+            echo "📝 Testing feature:playlists:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_playlists_presentation }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:playlists:presentation:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:playlists:presentation:koverXmlReport :feature:playlists:presentation:koverHtmlReport"
+            echo "📝 Testing feature:playlists:presentation"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_search_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:search:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:search:api:koverXmlReport :feature:search:api:koverHtmlReport"
+            echo "🔍 Testing feature:search:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_search_presentation }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:search:presentation:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:search:presentation:koverXmlReport :feature:search:presentation:koverHtmlReport"
+            echo "🔍 Testing feature:search:presentation"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_media_details_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:media_details:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:media_details:api:koverXmlReport :feature:media_details:api:koverHtmlReport"
+            echo "📺 Testing feature:media_details:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_media_details_presentation }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:media_details:presentation:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:media_details:presentation:koverXmlReport :feature:media_details:presentation:koverHtmlReport"
+            echo "📺 Testing feature:media_details:presentation"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_onboarding_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:onboarding:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:onboarding:api:koverXmlReport :feature:onboarding:api:koverHtmlReport"
+            echo "🚀 Testing feature:onboarding:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_onboarding_presentation }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:onboarding:presentation:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:onboarding:presentation:koverXmlReport :feature:onboarding:presentation:koverHtmlReport"
+            echo "🚀 Testing feature:onboarding:presentation"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_category_api }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:category:api:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:category:api:koverXmlReport :feature:category:api:koverHtmlReport"
+            echo "📂 Testing feature:category:api"
+          fi
+          
+          if [ "${{ steps.test_changes.outputs.test_feature_category_presentation }}" = "true" ]; then
+            TEST_TASKS="$TEST_TASKS :feature:category:presentation:test"
+            KOVER_TASKS="$KOVER_TASKS :feature:category:presentation:koverXmlReport :feature:category:presentation:koverHtmlReport"
+            echo "📂 Testing feature:category:presentation"
+          fi
           
           # Execute test tasks
           if [ -n "$TEST_TASKS" ]; then
@@ -221,7 +303,14 @@ jobs:
             VERIFY_TASKS="$VERIFY_TASKS :data:repositories:vod:koverVerify"
           fi
           
-          # Add more modules as needed...
+          if [ "${{ steps.test_changes.outputs.test_data_repositories_identity }}" = "true" ]; then
+            VERIFY_TASKS="$VERIFY_TASKS :data:repositories:identity:koverVerify"
+          fi
+          
+          # Add more verification tasks for other modules as needed
+          if [ "${{ steps.test_changes.outputs.test_feature_home_presentation }}" = "true" ]; then
+            VERIFY_TASKS="$VERIFY_TASKS :feature:home:presentation:koverVerify"
+          fi
           
           if [ -n "$VERIFY_TASKS" ]; then
             echo "🔍 Verifying coverage: $VERIFY_TASKS"
@@ -242,6 +331,8 @@ jobs:
             data/remote_data_source/identity/build/reports/kover/report.xml
             data/local_data_source/vod/build/reports/kover/report.xml
             data/local_data_source/identity/build/reports/kover/report.xml
+            feature/home/presentation/build/reports/kover/report.xml
+            feature/authentication/presentation/build/reports/kover/report.xml
           flags: unittests
           name: novix-coverage-report
           fail_ci_if_error: false
