@@ -274,7 +274,7 @@ private fun HomeScreenContent(
         onLoginButtonClick = interactionListener::onLoginButtonClick
     )
 
-
+    Text("add new test")
 }
 
 @Composable
