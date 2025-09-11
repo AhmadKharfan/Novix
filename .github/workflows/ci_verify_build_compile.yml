@@ -1,4 +1,4 @@
-name: CI - Verify build compile
+name: CI - Optimized Build
 
 on:
   pull_request:
@@ -11,6 +11,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for proper diff
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -45,5 +47,236 @@ jobs:
           echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" > keys.properties
           cp keys.properties ./data/remote_data_source/vod/keys.properties
 
-      - name: Build without tests
-        run: ./gradlew assemble -x lintVitalRelease -x lint
+      - name: 🔍 Detect changed modules
+        id: changes
+        run: |
+          # Get the base branch for comparison
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+          fi
+          
+          echo "Comparing against: $BASE_SHA"
+          
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only $BASE_SHA HEAD || echo "")
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Function to check if module changed
+          check_module_changed() {
+            local module_path="$1"
+            local output_var="$2"
+            if echo "$CHANGED_FILES" | grep -q "^${module_path}/"; then
+              echo "${output_var}=true" >> $GITHUB_OUTPUT
+              echo "✅ Module $module_path changed"
+            else
+              echo "${output_var}=false" >> $GITHUB_OUTPUT
+            fi
+          }
+          
+          # Check each module
+          check_module_changed "app" "app_changed"
+          check_module_changed "data/repositories/vod" "data_repositories_vod_changed"
+          check_module_changed "data/remote_data_source/vod" "data_remote_vod_changed"
+          check_module_changed "data/local_data_source/vod" "data_local_vod_changed"
+          check_module_changed "data/repositories/identity" "data_repositories_identity_changed"
+          check_module_changed "data/remote_data_source/identity" "data_remote_identity_changed"
+          check_module_changed "data/local_data_source/identity" "data_local_identity_changed"
+          check_module_changed "domain/vod" "domain_vod_changed"
+          check_module_changed "domain/identity" "domain_identity_changed"
+          check_module_changed "design_system" "design_system_changed"
+          check_module_changed "image_viewer" "image_viewer_changed"
+          check_module_changed "tvapp" "tvapp_changed"
+          
+          # Feature modules
+          check_module_changed "feature/authentication/api" "feature_auth_api_changed"
+          check_module_changed "feature/authentication/presentation" "feature_auth_presentation_changed"
+          check_module_changed "feature/home/api" "feature_home_api_changed"
+          check_module_changed "feature/home/presentation" "feature_home_presentation_changed"
+          check_module_changed "feature/user_profile/api" "feature_profile_api_changed"
+          check_module_changed "feature/user_profile/presentation" "feature_profile_presentation_changed"
+          check_module_changed "feature/playlists/api" "feature_playlists_api_changed"
+          check_module_changed "feature/playlists/presentation" "feature_playlists_presentation_changed"
+          check_module_changed "feature/search/api" "feature_search_api_changed"
+          check_module_changed "feature/search/presentation" "feature_search_presentation_changed"
+          check_module_changed "feature/media_details/api" "feature_media_details_api_changed"
+          check_module_changed "feature/media_details/presentation" "feature_media_details_presentation_changed"
+          check_module_changed "feature/onboarding/api" "feature_onboarding_api_changed"
+          check_module_changed "feature/onboarding/presentation" "feature_onboarding_presentation_changed"
+          check_module_changed "feature/category/api" "feature_category_api_changed"
+          check_module_changed "feature/category/presentation" "feature_category_presentation_changed"
+          
+          # Check for root-level changes (build scripts, etc.)
+          if echo "$CHANGED_FILES" | grep -qE '^(build\.gradle|settings\.gradle|gradle\.properties|build-logic/)'; then
+            echo "root_changed=true" >> $GITHUB_OUTPUT
+            echo "✅ Root build files changed - will build all modules"
+          else
+            echo "root_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🏗️ Build changed modules and dependents
+        run: |
+          BUILD_TASKS=""
+          
+          # If root files changed, build everything
+          if [ "${{ steps.changes.outputs.root_changed }}" = "true" ]; then
+            echo "🔄 Root files changed - building all modules"
+            ./gradlew assemble -x lintVitalRelease -x lint --parallel --build-cache
+            exit 0
+          fi
+          
+          # Core/foundational modules (these affect many others)
+          if [ "${{ steps.changes.outputs.design_system_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :design_system:assemble"
+            echo "📱 Building design_system"
+          fi
+          
+          if [ "${{ steps.changes.outputs.image_viewer_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :image_viewer:assemble"
+            echo "🖼️ Building image_viewer"
+          fi
+          
+          # Domain modules
+          if [ "${{ steps.changes.outputs.domain_vod_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :domain:vod:assemble"
+            echo "🎬 Building domain:vod"
+          fi
+          
+          if [ "${{ steps.changes.outputs.domain_identity_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :domain:identity:assemble"
+            echo "👤 Building domain:identity"
+          fi
+          
+          # Data layer modules
+          if [ "${{ steps.changes.outputs.data_local_vod_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :data:local_data_source:vod:assemble"
+            echo "💾 Building data:local_data_source:vod"
+          fi
+          
+          if [ "${{ steps.changes.outputs.data_remote_vod_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :data:remote_data_source:vod:assemble"
+            echo "🌐 Building data:remote_data_source:vod"
+          fi
+          
+          if [ "${{ steps.changes.outputs.data_repositories_vod_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :data:repositories:vod:assemble"
+            echo "📚 Building data:repositories:vod"
+          fi
+          
+          if [ "${{ steps.changes.outputs.data_local_identity_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :data:local_data_source:identity:assemble"
+            echo "💾 Building data:local_data_source:identity"
+          fi
+          
+          if [ "${{ steps.changes.outputs.data_remote_identity_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :data:remote_data_source:identity:assemble"
+            echo "🌐 Building data:remote_data_source:identity"
+          fi
+          
+          if [ "${{ steps.changes.outputs.data_repositories_identity_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :data:repositories:identity:assemble"
+            echo "📚 Building data:repositories:identity"
+          fi
+          
+          # Feature API modules
+          if [ "${{ steps.changes.outputs.feature_auth_api_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:authentication:api:assemble"
+            echo "🔑 Building feature:authentication:api"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_home_api_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:home:api:assemble"
+            echo "🏠 Building feature:home:api"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_profile_api_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:user_profile:api:assemble"
+            echo "👤 Building feature:user_profile:api"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_playlists_api_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:playlists:api:assemble"
+            echo "📝 Building feature:playlists:api"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_search_api_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:search:api:assemble"
+            echo "🔍 Building feature:search:api"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_media_details_api_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:media_details:api:assemble"
+            echo "📺 Building feature:media_details:api"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_onboarding_api_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:onboarding:api:assemble"
+            echo "🚀 Building feature:onboarding:api"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_category_api_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:category:api:assemble"
+            echo "📂 Building feature:category:api"
+          fi
+          
+          # Feature presentation modules
+          if [ "${{ steps.changes.outputs.feature_auth_presentation_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:authentication:presentation:assemble"
+            echo "🔑 Building feature:authentication:presentation"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_home_presentation_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:home:presentation:assemble"
+            echo "🏠 Building feature:home:presentation"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_profile_presentation_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:user_profile:presentation:assemble"
+            echo "👤 Building feature:user_profile:presentation"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_playlists_presentation_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:playlists:presentation:assemble"
+            echo "📝 Building feature:playlists:presentation"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_search_presentation_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:search:presentation:assemble"
+            echo "🔍 Building feature:search:presentation"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_media_details_presentation_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:media_details:presentation:assemble"
+            echo "📺 Building feature:media_details:presentation"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_onboarding_presentation_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:onboarding:presentation:assemble"
+            echo "🚀 Building feature:onboarding:presentation"
+          fi
+          
+          if [ "${{ steps.changes.outputs.feature_category_presentation_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :feature:category:presentation:assemble"
+            echo "📂 Building feature:category:presentation"
+          fi
+          
+          # Main app modules
+          if [ "${{ steps.changes.outputs.app_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :app:assemble"
+            echo "📱 Building app"
+          fi
+          
+          if [ "${{ steps.changes.outputs.tvapp_changed }}" = "true" ]; then
+            BUILD_TASKS="$BUILD_TASKS :tvapp:assemble"
+            echo "📺 Building tvapp"
+          fi
+          
+          # Execute build tasks
+          if [ -n "$BUILD_TASKS" ]; then
+            echo "🚀 Executing build tasks: $BUILD_TASKS"
+            ./gradlew $BUILD_TASKS -x lintVitalRelease -x lint --parallel --build-cache
+          else
+            echo "ℹ️ No modules changed - skipping build"
+          fi
